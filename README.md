@@ -80,13 +80,6 @@ python -m venv .venv-cpu
 
 別の場所へ移動する場合は、同じ階層にある `_internal` フォルダとセットで **出力フォルダごと** 移動してください。
 
-## 自動リリース（GitHub Actions）
-
-`v*` 形式のタグ（例: `v1.0.0`）をプッシュするか、GitHub の **Actions** タブから「Release (Build Lite .exe)」を手動実行すると、自動的に Lite版（CPU軽量版）がビルド・`.7z` 圧縮され、GitHub Releases に公開されます。
-
-```powershell
-git tag v1.0.0
-git push origin v1.0.0
 ```
 
 ## 注意事項
