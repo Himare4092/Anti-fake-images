@@ -1,12 +1,19 @@
 import os
 import sys
 
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
 if sys.stdout is None:
     sys.stdout = open(os.devnull, "w", encoding="utf-8")
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
+import faulthandler
+import json
+import multiprocessing
 import tempfile
+import time
 import traceback
 import numpy as np
 import cv2
@@ -29,9 +36,49 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QSplitter,
     QFrame,
+    QLineEdit,
 )
 
 from engine.analyzer import FakeImageAnalyzer, AnalysisResult
+
+
+def _get_config_paths() -> list[str]:
+    """設定ファイルの探索・保存パスを優先順（実行ファイル横 -> LOCALAPPDATA）で返す。"""
+    if getattr(sys, "frozen", False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    paths = [os.path.join(base_dir, "config.json")]
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        paths.append(os.path.join(local_app_data, "AntiFakeImageDetector", "config.json"))
+    return paths
+
+
+def _load_config() -> dict:
+    for path in _get_config_paths():
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                continue
+    return {}
+
+
+def _save_config(cfg: dict):
+    for path in _get_config_paths():
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            return
+        except Exception:
+            continue
 
 
 DARK_STYLESHEET = """
@@ -75,6 +122,13 @@ QComboBox {
     border-radius: 5px;
     padding: 5px 10px;
     color: #e6e8ef;
+}
+QLineEdit {
+    background-color: #1b1f2a;
+    border: 1px solid #2e3446;
+    border-radius: 5px;
+    padding: 5px 10px;
+    color: #cbd5e1;
 }
 QProgressBar {
     border: 1px solid #2a2f3d;
@@ -150,11 +204,16 @@ class ImageDropLabel(QLabel):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Anti-Fake Image Detector (高精度フェイク画像検出)")
+        import torch
+
+        self.device_label = "GPU (CUDA)" if torch.cuda.is_available() else "CPU"
+        self.setWindowTitle(f"Anti-Fake Image Detector (高精度フェイク画像検出) [{self.device_label}]")
         self.resize(1280, 820)
         self.setStyleSheet(DARK_STYLESHEET)
 
-        self.analyzer = FakeImageAnalyzer()
+        self.config = _load_config()
+        cache_dir = str(self.config.get("model_cache_dir", "")).strip() or None
+        self.analyzer = FakeImageAnalyzer(cache_dir=cache_dir)
         self.current_image_path: str | None = None
         self.orig_np: np.ndarray | None = None
         self.current_result: AnalysisResult | None = None
@@ -203,6 +262,26 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.slider_alpha)
 
         main_layout.addLayout(top_bar)
+
+        # モデル保存先バー
+        cache_bar = QHBoxLayout()
+        cache_bar.addWidget(QLabel("モデル保存先:"))
+        self.edit_cache_dir = QLineEdit()
+        self.edit_cache_dir.setReadOnly(True)
+        self.edit_cache_dir.setPlaceholderText("標準キャッシュ (~/.cache/huggingface/hub)")
+        if self.analyzer.ai_detector.cache_dir:
+            self.edit_cache_dir.setText(self.analyzer.ai_detector.cache_dir)
+        cache_bar.addWidget(self.edit_cache_dir, stretch=1)
+
+        self.btn_select_cache = QPushButton("フォルダを選択...")
+        self.btn_select_cache.clicked.connect(self.select_cache_dir)
+        cache_bar.addWidget(self.btn_select_cache)
+
+        self.btn_reset_cache = QPushButton("標準に戻す")
+        self.btn_reset_cache.clicked.connect(self.reset_cache_dir)
+        cache_bar.addWidget(self.btn_reset_cache)
+
+        main_layout.addLayout(cache_bar)
 
         # メインスプリッター（左：画像 / 右：解析結果）
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -256,7 +335,7 @@ class MainWindow(QMainWindow):
 
         # ステータスバー
         status_bar = QHBoxLayout()
-        self.lbl_status = QLabel("待機中")
+        self.lbl_status = QLabel(f"待機中 (実行デバイス: {self.device_label})")
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
@@ -281,6 +360,24 @@ class MainWindow(QMainWindow):
         row.addWidget(lbl_val)
         parent_layout.addLayout(row)
         return bar, lbl_val
+
+    def select_cache_dir(self):
+        start_dir = self.analyzer.ai_detector.cache_dir or os.path.expanduser("~")
+        chosen = QFileDialog.getExistingDirectory(self, "AIモデルのダウンロード先フォルダを選択", start_dir)
+        if chosen:
+            norm_path = os.path.normpath(chosen)
+            self.config["model_cache_dir"] = norm_path
+            _save_config(self.config)
+            self.analyzer.set_cache_dir(norm_path)
+            self.edit_cache_dir.setText(norm_path)
+            self.lbl_status.setText(f"モデル保存先を変更しました: {norm_path}")
+
+    def reset_cache_dir(self):
+        self.config["model_cache_dir"] = ""
+        _save_config(self.config)
+        self.analyzer.set_cache_dir(None)
+        self.edit_cache_dir.clear()
+        self.lbl_status.setText("モデル保存先を標準キャッシュに戻しました")
 
     def open_file_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -307,6 +404,8 @@ class MainWindow(QMainWindow):
             return
         self.btn_open.setEnabled(False)
         self.btn_analyze.setEnabled(False)
+        self.btn_select_cache.setEnabled(False)
+        self.btn_reset_cache.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.lbl_status.setText("解析を開始しています...")
 
@@ -321,6 +420,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.btn_open.setEnabled(True)
         self.btn_analyze.setEnabled(True)
+        self.btn_select_cache.setEnabled(True)
+        self.btn_reset_cache.setEnabled(True)
         self.lbl_status.setText("解析が完了しました")
 
         pct = result.overall_fake_prob
@@ -355,6 +456,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.btn_open.setEnabled(True)
         self.btn_analyze.setEnabled(True)
+        self.btn_select_cache.setEnabled(True)
+        self.btn_reset_cache.setEnabled(True)
         self.lbl_status.setText(f"エラー: {err_msg}")
         self.txt_report.setPlainText(f"解析中にエラーが発生しました:\n{err_msg}")
 
@@ -394,15 +497,29 @@ class MainWindow(QMainWindow):
         self.update_image_display()
 
 
-def _run_self_test(output_log_path: str) -> int:
+def _run_self_test(output_log_path: str, cache_dir: str | None = None) -> int:
     """GUI初期化、フォレンジック解析、AI検出モデルの推論を一通り検証してログ出力する。"""
-    import torch
+    trace_path = f"{output_log_path}.trace.log"
+    trace_fp = open(trace_path, "w", encoding="utf-8")
+    t0 = time.time()
 
-    app = QApplication(sys.argv)
-    win = MainWindow()
-    _ = win  # GUIインスタンス化の確認
+    def trace(msg: str):
+        trace_fp.write(f"[{time.time() - t0:.2f}s] {msg}\n")
+        trace_fp.flush()
 
+    faulthandler.dump_traceback_later(60, file=trace_fp, exit=True)
+    app = None
+    succeeded = False
     try:
+        trace("importing torch")
+        import torch
+
+        trace("creating QApplication")
+        app = QApplication(sys.argv)
+        trace("creating MainWindow")
+        win = MainWindow()
+        _ = win  # GUIインスタンス化の確認
+
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = os.path.join(tmpdir, "test_splice.png")
             rng = np.random.default_rng(42)
@@ -411,12 +528,19 @@ def _run_self_test(output_log_path: str) -> int:
             base[64:192, 64:192] = np.array([220, 40, 40], dtype=np.uint8)
             Image.fromarray(base).save(tmp_path, format="PNG")
 
-            analyzer = FakeImageAnalyzer()
+            trace("initializing FakeImageAnalyzer")
+            analyzer = FakeImageAnalyzer(
+                progress_callback=lambda m: trace(f"progress: {m}"),
+                cache_dir=cache_dir,
+            )
+            trace("running analyzer.analyze")
             result = analyzer.analyze(tmp_path)
+            trace("analyzer.analyze finished")
 
             lines = [
                 "SELF_TEST_OK",
                 f"cuda_available: {torch.cuda.is_available()}",
+                f"cache_dir: {cache_dir or 'default'}",
                 f"overall_fake_prob: {result.overall_fake_prob:.2f}",
                 f"ai_prob: {result.ai_prob:.2f}",
                 f"splice_prob: {result.splice_prob:.2f}",
@@ -424,19 +548,35 @@ def _run_self_test(output_log_path: str) -> int:
             ]
         with open(output_log_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+        succeeded = True
+        trace("SELF_TEST_OK written")
         return 0
     except Exception:
+        trace("exception caught:\n" + traceback.format_exc())
         with open(output_log_path, "w", encoding="utf-8") as f:
             f.write("SELF_TEST_FAILED\n")
             f.write(traceback.format_exc())
         return 1
     finally:
-        app.quit()
+        faulthandler.cancel_dump_traceback_later()
+        if app is not None:
+            app.quit()
+        trace_fp.close()
+        if succeeded and os.path.exists(trace_path):
+            try:
+                os.remove(trace_path)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     if len(sys.argv) >= 3 and sys.argv[1] == "--self-test":
-        sys.exit(_run_self_test(sys.argv[2]))
+        log_path = sys.argv[2]
+        cli_cache_dir = None
+        if len(sys.argv) >= 5 and sys.argv[3] == "--cache-dir":
+            cli_cache_dir = sys.argv[4]
+        sys.exit(_run_self_test(log_path, cache_dir=cli_cache_dir))
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()

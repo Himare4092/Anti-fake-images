@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 import cv2
@@ -16,23 +17,41 @@ class AIDetector:
         "Organika/sdxl-detector",
     ]
 
-    def __init__(self, progress_callback=None):
+    def __init__(self, progress_callback=None, cache_dir: str | None = None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.models = []
         self.progress_callback = progress_callback
+        self.cache_dir = self._normalize_cache_dir(cache_dir)
         self._loaded = False
+
+    @staticmethod
+    def _normalize_cache_dir(cache_dir: str | None) -> str | None:
+        if cache_dir is None:
+            return None
+        cleaned = str(cache_dir).strip()
+        return cleaned if cleaned else None
+
+    def set_cache_dir(self, cache_dir: str | None):
+        normalized = self._normalize_cache_dir(cache_dir)
+        if normalized != self.cache_dir:
+            self.cache_dir = normalized
+            self.models = []
+            self._loaded = False
 
     def load_models(self):
         if self._loaded:
             return
+        if self.cache_dir:
+            os.makedirs(self.cache_dir, exist_ok=True)
         for idx, model_id in enumerate(self.MODEL_IDS):
             if self.progress_callback:
                 self.progress_callback(
                     f"AI検出モデルを読み込み中 ({idx + 1}/{len(self.MODEL_IDS)}): {model_id}..."
                 )
             try:
-                processor = AutoImageProcessor.from_pretrained(model_id)
-                model = AutoModelForImageClassification.from_pretrained(model_id).to(self.device)
+                kwargs = {"cache_dir": self.cache_dir} if self.cache_dir else {}
+                processor = AutoImageProcessor.from_pretrained(model_id, **kwargs)
+                model = AutoModelForImageClassification.from_pretrained(model_id, **kwargs).to(self.device)
                 model.eval()
                 ai_label_idx = self._find_ai_label_index(model.config.id2label)
                 self.models.append({

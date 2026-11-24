@@ -14,11 +14,21 @@ AIで生成されたフェイク画像、および合成・切り貼りなどの
 - **AI生成画像検出（高精度アンサンブル）**:
   - 2種類の事前学習済みモデル（`umm-maybe/AI-image-detector` / `Organika/sdxl-detector`）のアンサンブル
   - 画像全体＋マルチパッチ（3×3オーバーラップ領域）の推論による高精度判定
+  - 画面上部からAIモデルのダウンロード先（キャッシュフォルダ）を任意に指定・保存可能（`config.json` に永続化）
 - **非AI加工・フォレンジック解析**:
   - ELA（複数品質でのJPEG再圧縮誤差解析）
   - 高周波ノイズ残差による局所ノイズ分散の不均一性検出
   - 2次元FFTによる周波数スペクトル異常解析
   - EXIF / PNGテキストチャンクからのAI生成ツール・編集ソフト痕跡検査
+
+## ダウンロードと使い方（`.exe` 配布版 / `.7z`）
+
+[GitHub Releases](https://github.com/Himare4092/Anti-fake-images/releases) から圧縮ファイル（`.7z`）をダウンロードして利用できます。Python のインストールは不要です。
+
+- **Lite版（CPU専用・軽量）**: `AntiFakeImageDetector_Lite` の `.7z` を解凍し、中の `AntiFakeImageDetector_Lite.exe` をダブルクリックして起動します（NVIDIA GPU がない PC 向け）。
+- **GPU版（CUDA対応・高速）**: NVIDIA GPU 搭載 PC 向けです。分割圧縮（`.7z.001`, `.7z.002` ...）されている場合は、すべての分割ファイルを同じフォルダに置いてから `7-Zip` 等で `.7z.001` を解凍し、中の `AntiFakeImageDetector.exe` を起動してください。
+
+> **重要**: いずれのバージョンも、同じ階層にある `_internal` フォルダとセットで動作します。`.exe` 単体だけを別の場所へ移動すると起動できなくなるため、**解凍したフォルダのまま**ご利用ください。
 
 ## 動作環境
 
@@ -52,13 +62,32 @@ python -m venv .venv
 
 PyInstaller を用いてフォルダ形式（`--onedir`）の実行ファイルをビルドできます。
 
+### GPU版（CUDA対応・高速）
 ```powershell
 .\.venv\Scripts\pip install pyinstaller
 .\.venv\Scripts\pyinstaller.exe --noconfirm --clean AntiFakeImageDetector.spec
 ```
+出力先: `dist\AntiFakeImageDetector\AntiFakeImageDetector.exe`
 
-ビルド完了後、`dist\AntiFakeImageDetector\AntiFakeImageDetector.exe` が生成されます。  
-別の場所へ移動する場合は、同じ階層にある `_internal` フォルダとセットで **`AntiFakeImageDetector` フォルダごと** 移動してください。
+### Lite版（CPU専用・軽量）
+```powershell
+python -m venv .venv-cpu
+.\.venv-cpu\Scripts\pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+.\.venv-cpu\Scripts\pip install -r requirements.txt pyinstaller
+.\.venv-cpu\Scripts\pyinstaller.exe --noconfirm --clean AntiFakeImageDetector_Lite.spec
+```
+出力先: `dist\AntiFakeImageDetector_Lite\AntiFakeImageDetector_Lite.exe`
+
+別の場所へ移動する場合は、同じ階層にある `_internal` フォルダとセットで **出力フォルダごと** 移動してください。
+
+## 自動リリース（GitHub Actions）
+
+`v*` 形式のタグ（例: `v1.0.0`）をプッシュするか、GitHub の **Actions** タブから「Release (Build Lite .exe)」を手動実行すると、自動的に Lite版（CPU軽量版）がビルド・`.7z` 圧縮され、GitHub Releases に公開されます。
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
 
 ## 注意事項
 

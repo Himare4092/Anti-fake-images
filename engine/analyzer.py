@@ -34,9 +34,12 @@ def _to_color_heatmap(norm_map: np.ndarray) -> np.ndarray:
 
 
 class FakeImageAnalyzer:
-    def __init__(self, progress_callback=None):
+    def __init__(self, progress_callback=None, cache_dir: str | None = None):
         self.progress_callback = progress_callback
-        self.ai_detector = AIDetector(progress_callback=progress_callback)
+        self.ai_detector = AIDetector(progress_callback=progress_callback, cache_dir=cache_dir)
+
+    def set_cache_dir(self, cache_dir: str | None):
+        self.ai_detector.set_cache_dir(cache_dir)
 
     def _report(self, msg: str):
         if self.progress_callback:

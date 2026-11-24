@@ -1,11 +1,17 @@
 # Virtual environments
 .venv/
+.venv-cpu/
 venv/
 env/
+
+# Local app settings
+config.json
 
 # PyInstaller build artifacts (large binaries)
 build/
 dist/
+*.7z
+*.7z.*
 
 # Python cache
 __pycache__/
