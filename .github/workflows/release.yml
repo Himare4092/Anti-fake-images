@@ -1,4 +1,4 @@
-name: Release (Build Lite .exe)
+name: Release (Build GPU & Lite .exe)
 
 on:
   push:
@@ -7,15 +7,40 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release tag name (e.g. v1.0.0)"
+        description: "Release tag name (e.g. v1.0.1)"
         required: true
-        default: "v1.0.0"
+        default: "v1.0.1"
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.name }}
+    steps:
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag_name }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          echo "name=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure GitHub Release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          if ! gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "${{ github.repository }}" --title "$TAG" --generate-notes
+          fi
+
+  build-lite:
+    needs: prepare-release
     runs-on: windows-latest
     steps:
       - name: Checkout repository
@@ -30,8 +55,8 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt pyinstaller
+          pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install --no-cache-dir -r requirements.txt pyinstaller
 
       - name: Build Lite .exe with PyInstaller
         shell: pwsh
@@ -43,20 +68,49 @@ jobs:
         run: |
           7z a -t7z -mx=5 AntiFakeImageDetector_Lite-win64.7z .\dist\AntiFakeImageDetector_Lite
 
-      - name: Determine release tag
-        id: tag
+      - name: Upload Lite archive to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare-release.outputs.tag_name }}
         shell: pwsh
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            "name=${{ inputs.tag_name }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          } else {
-            "name=${{ github.ref_name }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          }
+          gh release upload $env:TAG AntiFakeImageDetector_Lite-win64.7z --repo "${{ github.repository }}" --clobber
 
-      - name: Create GitHub Release and upload .7z
-        uses: softprops/action-gh-release@v2
+  build-gpu:
+    needs: prepare-release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          generate_release_notes: true
-          files: |
-            AntiFakeImageDetector_Lite-win64.7z
+          python-version: "3.13"
+
+      - name: Install CUDA PyTorch and dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+          pip install --no-cache-dir -r requirements.txt pyinstaller
+
+      - name: Build GPU .exe with PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean AntiFakeImageDetector.spec
+          Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
+
+      - name: Compress GPU package with 7z (split under 2GB limit)
+        shell: pwsh
+        run: |
+          7z a -t7z -mx=5 -v1900m AntiFakeImageDetector_GPU-win64.7z .\dist\AntiFakeImageDetector
+
+      - name: Upload GPU archive(s) to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare-release.outputs.tag_name }}
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem "AntiFakeImageDetector_GPU-win64.7z*" | Select-Object -ExpandProperty FullName
+          gh release upload $env:TAG @files --repo "${{ github.repository }}" --clobber
